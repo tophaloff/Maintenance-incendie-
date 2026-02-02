@@ -2,89 +2,76 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 
-# Configuration de la page pour un look moderne
-st.set_page_config(page_title="SSI - Registre de Sécurité", layout="wide", initial_sidebar_state="expanded")
+# Configuration de l'interface
+st.set_page_config(page_title="Supervision Multi-Sites SSI", layout="wide")
 
-# --- STYLE CSS POUR L'INTERFACE ---
+# --- STYLE ---
 st.markdown("""
     <style>
-    .main { background-color: #f8f9fa; }
-    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    .site-card { background-color: #f0f2f6; padding: 20px; border-radius: 10px; border-left: 5px solid #ff4b4b; }
     </style>
     """, unsafe_allow_html=True)
 
 # --- INITIALISATION ---
-if 'registre' not in st.session_state:
-    st.session_state.registre = pd.DataFrame([
-        {"ID": "ECS-01", "Élément": "Centrale Principale", "Type": "ECS", "Zone": "Accueil", "Dernière VGP": "2024-01-15", "Période": "Trimestriel"}
+if 'sites' not in st.session_state:
+    st.session_state.sites = ["Usine Nord", "Entrepôt Logistique", "Siège Social"]
+
+if 'maintenances' not in st.session_state:
+    # On ajoute une colonne 'Site' et une 'Gamme'
+    st.session_state.maintenances = pd.DataFrame([
+        {"Site": "Usine Nord", "Élément": "Centrale ECS", "Dernière VGP": "2024-01-10", "Fréquence": 90, "Gamme": "Essai batteries + report défauts"},
+        {"Site": "Entrepôt Logistique", "Élément": "Rideau RF", "Dernière VGP": "2023-11-05", "Fréquence": 180, "Gamme": "Test de descente + graissage"},
     ])
 
-if 'anomalies' not in st.session_state:
-    st.session_state.anomalies = pd.DataFrame(columns=["Date", "Équipement", "Description", "Gravité", "Statut"])
+# --- BARRE LATÉRALE : SÉLECTION DU SITE ---
+st.sidebar.title("🌍 Supervision")
+site_filtre = st.sidebar.selectbox("Filtrer par site", ["Tous les sites"] + st.session_state.sites)
 
-PERIODES = {"Mensuel": 30, "Trimestriel": 90, "Semestriel": 180, "Annuel": 365}
+# --- VUE GLOBALE (MULTI-SITES) ---
+st.title("🛡️ Supervision Multi-Sites & Gammes")
 
-# --- BARRE LATÉRALE (NAVIGATION) ---
-with st.sidebar:
-    st.image("https://img.icons8.com/fluency/96/fire-alarm.png", width=80)
-    st.title("Menu Maintenance")
-    page = st.radio("Aller vers :", ["📊 Tableau de Bord", "🔍 Signaler une Anomalie", "➕ Ajouter un Organe"])
+# Filtrage des données
+df = st.session_state.maintenances
+if site_filtre != "Tous les sites":
+    df = df[df['Site'] == site_filtre]
 
-# --- PAGE 1 : TABLEAU DE BORD ---
-if page == "📊 Tableau de Bord":
-    st.header("Tableau de Bord de Conformité SSI")
+# Affichage des KPIs
+col1, col2 = st.columns(2)
+with col1:
+    st.metric("Total Installations", len(df))
+with col2:
+    # Calcul des retards
+    df['Prochaine'] = df.apply(lambda r: (datetime.strptime(str(r['Dernière VGP']), '%Y-%m-%d') + timedelta(days=r['Fréquence'])).date(), axis=1)
+    retards = len(df[df['Prochaine'] < datetime.now().date()])
+    st.metric("Actions en retard", retards, delta=-retards, delta_color="inverse")
+
+st.divider()
+
+# --- AFFICHAGE DES GAMMES DE MAINTENANCE ---
+st.subheader("📋 Détail des installations et Gammes Opératoires")
+
+for index, row in df.iterrows():
+    statut_color = "🔴" if row['Prochaine'] < datetime.now().date() else "🟢"
     
-    # Indicateurs rapides (KPIs)
-    col1, col2, col3 = st.columns(3)
-    total_organes = len(st.session_state.registre)
-    anomalies_ouvertes = len(st.session_state.anomalies[st.session_state.anomalies["Statut"] == "Ouvert"])
-    
-    col1.metric("Organes au Registre", total_organes)
-    col2.metric("Anomalies en cours", anomalies_ouvertes, delta_color="inverse")
-    col3.metric("Prochaine Commission", "12/2026", "230 jours")
-
-    st.divider()
-
-    # Tableau Principal avec Couleurs
-    st.subheader("État des Vérifications Périodiques")
-    
-    def calculer_statut(row):
-        derniere = datetime.strptime(str(row['Dernière VGP']), '%Y-%m-%d')
-        echeance = derniere + timedelta(days=PERIODES[row['Période']])
-        jours_restants = (echeance.date() - datetime.now().date()).days
+    with st.expander(f"{statut_color} {row['Site']} - {row['Élément']} (Échéance : {row['Prochaine']})"):
+        st.write(f"**Dernière visite :** {row['Dernière VGP']}")
+        st.info(f"**Gamme de maintenance à appliquer :** \n\n {row['Gamme']}")
         
-        if jours_restants < 0: return "🔴 RETARD", "error"
-        elif jours_restants < 15: return "🟠 À PRÉVOIR", "warning"
-        else: return "🟢 CONFORME", "success"
-
-    df_display = st.session_state.registre.copy()
-    df_display[['État', 'Niveau']] = df_display.apply(lambda r: pd.Series(calculer_statut(r)), axis=1)
-    
-    st.table(df_display[["ID", "Élément", "Zone", "Période", "Dernière VGP", "État"]])
-
-    # Affichage des anomalies en cours
-    if not st.session_state.anomalies.empty:
-        st.subheader("⚠️ Anomalies actives")
-        st.warning("Des défauts ont été signalés et nécessitent une intervention.")
-        st.dataframe(st.session_state.anomalies[st.session_state.anomalies["Statut"] == "Ouvert"], use_container_width=True)
-
-# --- PAGE 2 : SIGNALER UNE ANOMALIE ---
-elif page == "🔍 Signaler une Anomalie":
-    st.header("Rapport d'Anomalie / Essais Mensuels")
-    with st.form("form_anomalie"):
-        equip = st.selectbox("Équipement concerné", st.session_state.registre["Élément"])
-        desc = st.text_area("Description du défaut (ex: Voyant dérangement batterie)")
-        gravite = st.select_slider("Gravité", options=["Mineure", "Moyenne", "Critique"])
-        submit = st.form_submit_button("Enregistrer l'anomalie")
+        # Simulation d'une check-list interactive
+        st.write("---")
+        st.markdown("**Check-list de l'intervenant :**")
+        c1, c2, c3 = st.columns(3)
+        c1.checkbox("Contrôle visuel", key=f"v_{index}")
+        c2.checkbox("Test fonctionnel", key=f"f_{index}")
+        c3.checkbox("Nettoyage/Graissage", key=f"n_{index}")
         
-        if submit:
-            nouvelle_a = {"Date": datetime.now().strftime("%d/%m/%Y"), "Équipement": equip, 
-                          "Description": desc, "Gravité": gravite, "Statut": "Ouvert"}
-            st.session_state.anomalies = pd.concat([st.session_state.anomalies, pd.DataFrame([nouvelle_a])], ignore_index=True)
-            st.success("Anomalie enregistrée dans le registre de sécurité.")
+        if st.button("Valider la maintenance", key=f"btn_{index}"):
+            st.success(f"Maintenance enregistrée pour {row['Élément']} !")
 
-# --- PAGE 3 : AJOUTER UN ORGANE ---
-elif page == "➕ Ajouter un Organe":
-    st.header("Configuration du Système")
-    # Formulaire simplifié ici...
-    st.info("Utilisez ce formulaire pour enregistrer un nouveau détecteur, déclencheur manuel ou clapet coupe-feu.")
+# --- FORMULAIRE D'AJOUT ---
+st.sidebar.divider()
+with st.sidebar.expander("➕ Nouveau Site / Matériel"):
+    nouveau_site = st.text_input("Nom du nouveau site")
+    if st.button("Ajouter Site"):
+        st.session_state.sites.append(nouveau_site)
+        st.rerun()
